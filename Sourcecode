@@ -1,0 +1,267 @@
+#include <DallasTemperature.h>
+#include <OneWire.h>
+#include <ESP8266WiFi.h>
+#include <BlynkSimpleEsp8266.h>
+#include <Ticker.h>
+#include "ThingSpeak.h"
+#define BLYNK_PRINT Serial
+#define pulsePin A0
+#define ONE_WIRE_BUS D2
+#define WIFI_SSID "vivo 1919"
+#define WIFI_PASSWORD "12345678"
+#define BLYNK_AUTH "_ieBSfrR3sdCQNXXnhyxyV5GTVBIVk92"  // Replace with your Blynk Auth Token
+
+unsigned long myChannelNumber = 2499004;
+const char * myWriteAPIKey = "OYSRFORLYY18W6G4";
+int keyIndex = 0;
+WiFiClient client;
+
+Ticker flipper;
+
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
+volatile int BPM;
+volatile int Signal;
+volatile int IBI = 600;
+volatile boolean Pulse = false;
+volatile boolean QS = false;
+volatile int rate[10];
+volatile unsigned long sampleCounter = 0;
+volatile unsigned long lastBeatTime = 0;
+volatile unsigned long current;
+volatile int P = 512;
+volatile int T = 512;
+volatile int thresh = 560;
+volatile int amp = 0;
+volatile boolean firstBeat = true;
+volatile boolean secondBeat = false;
+volatile unsigned long lastMillis = 0;
+volatile float tempSignal=0;
+volatile int msTime = 0;
+float t;
+
+void setup() {
+   sensors.begin();
+   Serial.begin(115200);
+   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+   Serial.print("Connecting to ");
+   Serial.print(WIFI_SSID);
+   while (WiFi.status() != WL_CONNECTED) {
+      Serial.print(".");
+      delay(500);
+   }
+   Serial.println();
+   Serial.print("Connected");
+   Serial.println("IP Address:");
+   Serial.println(WiFi.localIP());
+
+   Blynk.begin(BLYNK_AUTH, WIFI_SSID, WIFI_PASSWORD);
+
+   ThingSpeak.begin(client);
+   pinMode(A0, INPUT);
+   interruptSetup();
+   lastMillis = millis();
+}
+
+void loop() {
+   sensors.requestTemperatures();  
+   t = sensors.getTempCByIndex(0);                                                                                
+   if (msTime > 10000) {
+      noInterrupts();
+      interrupts();
+      msTime = 0;
+   }
+   
+   if (QS == true) {    
+      serialOutputWhenBeatHappens();
+      QS = false;
+   }
+
+   Blynk.run();
+}
+
+void serialOutputWhenBeatHappens() {
+   sendDataToSerial('B', BPM);
+   Serial.print("Temperature is: ");
+   Serial.println(t);
+
+   Blynk.virtualWrite(V1, BPM);  // Assuming you have a Gauge widget in V1 for BPM
+   Blynk.virtualWrite(V2, t);    // Assuming you have a Value Display widget in V2 for temperature
+   
+   ThingSpeak.setField(1, BPM);
+   ThingSpeak.setField(2, t);
+   setup1();  // Call setup1() within the Ticker callback
+
+
+   int x = ThingSpeak.writeFields(myChannelNumber, myWriteAPIKey);
+   if (x == 200) {
+      Serial.println("Channel update successful.");
+   } else {
+      Serial.println("Problem updating channel. HTTP error code " + String(x));
+   }
+   
+   
+}
+
+
+
+
+void sendDataToSerial(char symbol, int data) {
+   Serial.print(symbol);
+   Serial.println(data);
+}
+
+void interruptSetup() {
+   flipper.attach_ms(2, ISRTr);
+}
+
+void ISRTr() {
+   noInterrupts();
+   Signal = analogRead(pulsePin);
+   current = millis();
+   int difference = current - lastMillis;
+   lastMillis = current;
+   sampleCounter += difference;
+   msTime += difference;
+   int N = sampleCounter - lastBeatTime;
+
+   if (Signal < thresh && N > (IBI / 5) * 3) {
+      if (Signal < T) {
+         T = Signal;
+      }
+   }
+
+   if (Signal > thresh && Signal > P) {
+      P = Signal;
+   }
+
+   if (N > 250) {
+      if ((Signal > thresh) && (Pulse == false) && (N > (IBI / 5) * 3)) {
+         Pulse = true;
+         IBI = sampleCounter - lastBeatTime;
+         lastBeatTime = sampleCounter;
+
+         if (secondBeat) {
+            secondBeat = false;
+            for (int i = 0; i <= 9; i++) {
+               rate[i] = IBI;
+            }
+         }
+
+         if (firstBeat) {
+            firstBeat = false;
+            secondBeat = true;
+            interrupts();
+            return;
+         }
+
+         word runningTotal = 0;
+         for (int i = 0; i <= 8; i++) {
+            rate[i] = rate[i + 1];
+            runningTotal += rate[i];
+         }
+
+         rate[9] = IBI;
+         runningTotal += rate[9];
+         runningTotal /= 10;
+         BPM = 60000 / runningTotal;
+         QS = true;
+      }
+   }
+
+   if (Signal < thresh && Pulse == true) {
+      Pulse = false;
+      amp = P - T;
+      thresh = amp / 2 + T;
+      P = thresh;
+      T = thresh;
+   }
+
+   if (N > 2500) {
+      thresh = 530;
+      P = 512;
+      T = 512;
+      lastBeatTime = sampleCounter;
+      firstBeat = true;
+      secondBeat = false;
+      BPM = 0;
+   }
+
+   interrupts();
+}
+
+#include "Arduino.h"
+#include <EMailSender.h>
+#include <ESP8266WiFi.h>
+
+const char* ssid = "vivo 1919";
+const char* password = "12345678";
+
+uint8_t connection_state = 0;
+uint16_t reconnect_interval = 10000;
+
+EMailSender emailSend("sasisachinss2003@gmail.com", "gzrd gcdq kibj fizp");
+
+uint8_t WiFiConnect(const char* nSSID = nullptr, const char* nPassword = nullptr)
+{
+    static uint16_t attempt = 0;
+    Serial.print("Connecting to ");
+    if(nSSID) {
+        WiFi.begin(nSSID, nPassword);
+        Serial.println(nSSID);
+    }
+
+    uint8_t i = 0;
+    while(WiFi.status()!= WL_CONNECTED && i++ < 50)
+    {
+        delay(200);
+        Serial.print(".");
+    }
+    ++attempt;
+    Serial.println("");
+    if(i == 51) {
+        Serial.print("Connection: TIMEOUT on attempt: ");
+        Serial.println(attempt);
+        if(attempt % 2 == 0)
+            Serial.println("Check if access point available or SSID and Password\r\n");
+        return false;
+    }
+    Serial.println("Connection: ESTABLISHED");
+    Serial.print("Got IP address: ");
+    Serial.println(WiFi.localIP());
+    return true;
+}
+
+void Awaits()
+{
+    uint32_t ts = millis();
+    while(!connection_state)
+    {
+        delay(50);
+        if(millis() > (ts + reconnect_interval) && !connection_state){
+            connection_state = WiFiConnect();
+            ts = millis();
+        }
+    }
+}
+
+void setup1()
+{
+    Serial.begin(115200);
+
+    connection_state = WiFiConnect(ssid, password);
+    if(!connection_state)  // if not connected to WIFI
+        Awaits();          // constantly trying to connect
+
+    EMailSender::EMailMessage message;
+    message.subject = "Health Notification ";
+    message.message = "Hello, Heart Rate of the Patient is: " + String(BPM) + ". Temp of the Patient is: " + String(t);
+
+
+    EMailSender::Response resp = emailSend.send("rubinishanmugasundaram59@gmail.com", message);
+
+    Serial.println("Sending status: ");
+    Serial.println(resp.status);
+    Serial.println(resp.code);
+    Serial.println(resp.desc);
+}
